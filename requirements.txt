@@ -1,0 +1,5 @@
+feedparser==6.0.10
+tweepy==4.12.1
+openai==0.27.8
+python-dotenv==0.21.1
+pytest==7.3.1 

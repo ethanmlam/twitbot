@@ -110,6 +110,8 @@ dist
 # vitepress cache directory
 **/.vitepress/cache
 
+venv/
+
 # Docusaurus cache and generated files
 .docusaurus
 
