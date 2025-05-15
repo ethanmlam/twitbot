@@ -25,19 +25,21 @@ class TestTwitterBot(unittest.TestCase):
         self.assertEqual(result[0]['title'], 'Test Tweet Title')
         self.assertEqual(result[0]['content'], 'Test Tweet Content')
     
-    @patch('openai.ChatCompletion.create')
-    def test_generate_reply(self, mock_create):
-        # Setup mock return value for openai.ChatCompletion.create
-        mock_response = MagicMock()
-        mock_response.choices[0].message.content = "This is a test reply"
-        mock_create.return_value = mock_response
+    @patch('anthropic.Client')
+    def test_generate_reply(self, mock_client_class):
+        # Setup mock for Anthropic client
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        
+        # Setup mock response
+        mock_client.completion.return_value = {"completion": "This is a test reply"}
         
         # Call the function to test
         result = app.generate_reply('Test tweet text')
         
         # Assert results
         self.assertEqual(result, "This is a test reply")
-        mock_create.assert_called_once()
+        mock_client.completion.assert_called_once()
     
     @patch('tweepy.API.update_status')
     def test_reply_to_tweet(self, mock_update_status):

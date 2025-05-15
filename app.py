@@ -2,7 +2,7 @@ import feedparser
 import re
 import os
 import tweepy
-import openai
+import anthropic
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,8 +16,8 @@ auth = tweepy.OAuth1UserHandler(
 )
 api = tweepy.API(auth)
 
-# OpenAI Auth
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Anthropic Auth
+client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # 1. Fetch tweet URLs from RSS
 def fetch_tweet_entries(rss_url):
@@ -33,21 +33,30 @@ def fetch_tweet_entries(rss_url):
             })
     return entries
 
-# 2. Use OpenAI to generate a tweet reply
+# 2. Use Anthropic to generate a tweet reply
 def generate_reply(tweet_text):
-    prompt = f"You're a helpful, witty startup founder. Reply to this build in public tweet: '{tweet_text}'"
+    prompt = f"Reply to this build in public tweet in an insightful sentence: '{tweet_text}'"
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{
-                "role": "user",
-                "content": prompt
-            }],
-            max_tokens=60
+        message = client.messages.create(
+            model="claude-3-7-sonnet-20250219",
+            max_tokens=60,
+            temperature=1,
+            system="You're a helpful, witty startup founder who builds in public. Respond with short, insightful replies to other founders.",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }
+            ]
         )
-        return response.choices[0].message.content.strip()
+        return message.content[0].text.strip()
     except Exception as e:
-        print(f"OpenAI error: {e}")
+        print(f"Anthropic error: {e}")
         return None
 
 # 3. Post reply
