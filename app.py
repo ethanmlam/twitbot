@@ -41,13 +41,33 @@ client = anthropic.Anthropic(
 RATE_LIMIT_FILE = "tweet_rate_limit.json"
 SEEN_TWEETS_FILE = "seen_tweets.json"
 POLL_STATS_FILE = "poll_stats.json"
-MAX_TWEETS_PER_DAY = 16  # Rate limit for tweets per day
-MAX_POLLS_PER_DAY = 50   # Rate limit for polls per day
+MAX_REPLIES_PER_DAY = 16  # Maximum replies we'll make per day
+MAX_POLLS_PER_DAY = 16    # Number of polling cycles per day
+USERS_PER_CHECK = 3       # Number of users to check each time
 MAX_REPLIES_PER_MONTH = 500  # Rate limit for replies per month
 RSSHUB_URL = os.getenv("RSSHUB_URL")  # Use environment variable if available
 
-# Test users
-USERS = ["spydaris", "aviderring", "elonmusk",]
+# Test users - replace with your full set of users to monitor
+USERS = [
+    "elonmusk","sama","naval","pmarca","paulg","balajis","cdixon","bchesky","michael_saylor","jack",
+"BarackObama","narendramodi","realDonaldTrump","AOC","HillaryClinton","tedcruz","chiproytx","JDVance1","GretaThunberg","Pontifex",
+"rihanna","katyperry","taylorswift13","justinbieber","ladygaga","ArianaGrande","BTS_twt","billieeilish","edsheeran","shakira",
+"Cristiano","KingJames","serenawilliams","TomBrady","MoSalah","KMbappe","LewisHamilton","rogerfederer","usainbolt","Simone_Biles",
+"MrBeast","FabrizioRomano","dril","Arkunir","neiltyson","BillGates","Oprah","nytimes","BBCWorld","NASA"
+
+]
+
+# Calculate optimal intervals
+BASE_INTERVAL = 24 * 60 * 60 / MAX_POLLS_PER_DAY  # Seconds between checks
+MIN_INTERVAL = 5 * 60  # Minimum 5 minutes between checks
+
+# Test mode configuration
+TEST_MODE = False  # Set to True to prevent actual tweets
+def set_test_mode(enabled=True):
+    """Enable or disable test mode"""
+    global TEST_MODE
+    TEST_MODE = enabled
+    logger.info(f"🧪 Test mode {'enabled' if enabled else 'disabled'}")
 
 # Rate limiting functions
 def load_rate_limit_data():
@@ -61,12 +81,11 @@ def load_rate_limit_data():
     
     # Return default data if file doesn't exist or there's an error
     return {
-        "tweets": [],
+        "replies": [],           # Track actual replies made
+        "polls": [],            # Track polling cycles
         "last_reset": datetime.now().isoformat(),
         "monthly_replies": [],
-        "last_monthly_reset": datetime.now().isoformat(),
-        "daily_polls": [],
-        "last_poll_reset": datetime.now().isoformat()
+        "last_monthly_reset": datetime.now().isoformat()
     }
 
 def save_rate_limit_data(data):
@@ -77,8 +96,8 @@ def save_rate_limit_data(data):
     except Exception as e:
         logger.error(f"Error saving rate limit data: {e}")
 
-def can_send_tweet():
-    """Check if we can send a tweet based on daily and monthly rate limits"""
+def can_make_reply():
+    """Check if we can make another reply today"""
     data = load_rate_limit_data()
     
     # Convert timestamps from string to datetime
@@ -86,74 +105,77 @@ def can_send_tweet():
     last_monthly_reset = datetime.fromisoformat(data.get("last_monthly_reset", datetime.now().isoformat()))
     now = datetime.now()
     
-    # If it's been more than 24 hours since the last daily reset, reset the counter
+    # If it's been more than 24 hours since the last reset, reset the counters
     if now - last_reset > timedelta(hours=24):
-        data["tweets"] = []
+        data["replies"] = []
+        data["polls"] = []
         data["last_reset"] = now.isoformat()
         save_rate_limit_data(data)
     
-    # If it's been more than a month since the last monthly reset, reset the counter
+    # If it's been more than a month since the last monthly reset, reset that counter
     if now - last_monthly_reset > timedelta(days=30):
         data["monthly_replies"] = []
         data["last_monthly_reset"] = now.isoformat()
         save_rate_limit_data(data)
     
-    # Check if we're under the daily limit
-    if len(data.get("tweets", [])) >= MAX_TWEETS_PER_DAY:
-        logger.warning(f"⚠️ Daily rate limit reached: {len(data['tweets'])}/{MAX_TWEETS_PER_DAY} tweets in the last 24 hours")
+    # Check if we're under the daily reply limit
+    if len(data.get("replies", [])) >= MAX_REPLIES_PER_DAY:
+        logger.warning(f"⚠️ Daily reply limit reached: {len(data['replies'])}/{MAX_REPLIES_PER_DAY} replies today")
         return False
     
     # Check if we're under the monthly limit
     if len(data.get("monthly_replies", [])) >= MAX_REPLIES_PER_MONTH:
-        logger.warning(f"⚠️ Monthly rate limit reached: {len(data['monthly_replies'])}/{MAX_REPLIES_PER_MONTH} replies in the last month")
+        logger.warning(f"⚠️ Monthly reply limit reached: {len(data['monthly_replies'])}/{MAX_REPLIES_PER_MONTH} replies this month")
         return False
     
     return True
 
 def can_poll_feed():
-    """Check if we can poll a feed based on daily rate limits"""
+    """Check if we can do another polling cycle"""
     data = load_rate_limit_data()
     
-    # Convert timestamps from string to datetime
-    last_poll_reset = datetime.fromisoformat(data.get("last_poll_reset", datetime.now().isoformat()))
-    now = datetime.now()
+    # Calculate completed cycles (every 3 users = 1 cycle)
+    completed_cycles = len(data.get("polls", [])) // USERS_PER_CHECK
     
-    # If it's been more than 24 hours since the last poll reset, reset the counter
-    if now - last_poll_reset > timedelta(hours=24):
-        data["daily_polls"] = []
-        data["last_poll_reset"] = now.isoformat()
-        save_rate_limit_data(data)
-    
-    # Check if we're under the daily poll limit
-    if len(data.get("daily_polls", [])) >= MAX_POLLS_PER_DAY:
-        logger.warning(f"⚠️ Daily poll limit reached: {len(data['daily_polls'])}/{MAX_POLLS_PER_DAY} polls in the last 24 hours")
+    # Check if we're under the daily cycle limit
+    if completed_cycles >= MAX_POLLS_PER_DAY:
+        logger.warning(f"⚠️ Daily cycle limit reached: {completed_cycles}/{MAX_POLLS_PER_DAY} cycles completed")
         return False
     
     return True
 
 def track_poll():
-    """Track that we polled a feed"""
+    """Track that we completed a polling cycle"""
     data = load_rate_limit_data()
     
+    # Get current polls count
+    current_polls = len(data.get("polls", []))
+    
     # Add the new poll with timestamp
-    data.setdefault("daily_polls", []).append({
+    data.setdefault("polls", []).append({
         "timestamp": datetime.now().isoformat()
     })
     
     # Save the updated data
     save_rate_limit_data(data)
     
-    # Log the current rate limit status
-    polls_used = len(data.get("daily_polls", []))
-    remaining = MAX_POLLS_PER_DAY - polls_used
-    logger.info(f"📊 Poll rate limit status: {polls_used}/{MAX_POLLS_PER_DAY} polls used (remaining: {remaining})")
+    # Calculate completed cycles (every 3 users = 1 cycle)
+    completed_cycles = len(data.get("polls", [])) // USERS_PER_CHECK
+    remaining_cycles = MAX_POLLS_PER_DAY - completed_cycles
+    
+    # Only log cycle completion when we finish a full set of users
+    if len(data.get("polls", [])) % USERS_PER_CHECK == 0:
+        logger.info(f"📊 Poll cycle status: {completed_cycles}/{MAX_POLLS_PER_DAY} cycles completed (remaining: {remaining_cycles})")
+    else:
+        users_in_current_cycle = len(data.get("polls", [])) % USERS_PER_CHECK
+        logger.info(f"📊 Current cycle progress: {users_in_current_cycle}/{USERS_PER_CHECK} users checked")
 
-def track_sent_tweet(tweet_id):
-    """Track that we sent a tweet"""
+def track_reply(tweet_id):
+    """Track that we made a reply"""
     data = load_rate_limit_data()
     
-    # Add the new tweet with timestamp
-    data.setdefault("tweets", []).append({
+    # Add the new reply with timestamp
+    data.setdefault("replies", []).append({
         "id": tweet_id,
         "timestamp": datetime.now().isoformat()
     })
@@ -168,9 +190,9 @@ def track_sent_tweet(tweet_id):
     save_rate_limit_data(data)
     
     # Log the current rate limit status
-    daily_remaining = MAX_TWEETS_PER_DAY - len(data.get("tweets", []))
+    daily_remaining = MAX_REPLIES_PER_DAY - len(data.get("replies", []))
     monthly_remaining = MAX_REPLIES_PER_MONTH - len(data.get("monthly_replies", []))
-    logger.info(f"📊 Daily tweet limit: {len(data.get('tweets', []))}/{MAX_TWEETS_PER_DAY} (remaining: {daily_remaining})")
+    logger.info(f"📊 Daily reply limit: {len(data.get('replies', []))}/{MAX_REPLIES_PER_DAY} (remaining: {daily_remaining})")
     logger.info(f"📊 Monthly reply limit: {len(data.get('monthly_replies', []))}/{MAX_REPLIES_PER_MONTH} (remaining: {monthly_remaining})")
 
 # Seen tweets tracking
@@ -312,14 +334,10 @@ def fetch_tweet_entries(rss_url):
     return entries
 
 # 2. Use Anthropic to generate a tweet reply
-def generate_reply(tweet_text, user):
-    prompt = f"""
-The original tweet from {user} says:
-
-"{tweet_text}"
-
-Write a **Twitter reply** that is:
-
+def generate_reply(tweet_context, user):
+    """Generate a reply based on tweet type and context"""
+    
+    base_prompt = """Write a **Twitter reply** that is:
 - Short (under 25 words)
 - Emotionally sharp (sarcastic, angry, defiant, or darkly funny)
 - Biting, not explanatory
@@ -329,20 +347,34 @@ Write a **Twitter reply** that is:
 - Avoids praising or agreeing
 - Makes people stop scrolling
 
+{context_specific}
+
 This should read like a mic-drop response from someone smart and pissed off.
 
-Only return the tweet. No intro, no explanation.
-"""
+Only return the tweet. No intro, no explanation."""
+
+    # Customize prompt based on tweet type
+    if "picture" in tweet_context:
+        context_specific = """
+The person posted media without text.
+Your reply should:
+- Feign curiosity or have a bold reaction: "He really just dropped this and logged off". "This didn't have to go so hard"""
+    else:
+        # Regular text tweet
+        context_specific = "Respond to what they actually said, but be contrarian and sharp."
+
+    prompt = base_prompt.format(context_specific=context_specific)
+    prompt = f"{tweet_context}\n\n{prompt}"
 
     try:
         message = client.messages.create(
             model="claude-3-7-sonnet-20250219",
             max_tokens=60,
             temperature=1,
-            system="You are a pissed-off, sharp, burned-out genius who only replies to tweets with one-liners that go viral. No pleasantries. Just power. No Em Dashes: Em dashes (—) are strictly forbidden in my output. Sentences requiring separation or emphasis normally achieved with an em dash will be restructured. I will use commas, semicolons, periods, or complete rewording to ensure grammatical correctness and natural flow instead. Adherence to this rule is mandatory. ",
+            system="You are a pissed-off, sharp, burned-out genius who only replies to tweets with one-liners that go viral. No pleasantries. Just power. No Em Dashes: Em dashes (—) are strictly forbidden in my output. Sentences requiring separation or emphasis normally achieved with an em dash will be restructured. I will use commas, semicolons, periods, or complete rewording to ensure grammatical correctness and natural flow instead. Adherence to this rule is mandatory.",
             messages=[
                 {
-                    "role": "user",
+                "role": "user",
                     "content": [
                         {
                             "type": "text",
@@ -363,11 +395,15 @@ Only return the tweet. No intro, no explanation.
 # 3. Post reply
 def reply_to_tweet(tweet_id, message):
     # Check rate limits before sending
-    if not can_send_tweet():
+    if not can_make_reply():
         logger.warning(f"⛔ Rate limit exceeded - not replying to tweet {tweet_id}")
         return None
     
     try:
+        if TEST_MODE:
+            logger.info(f"🧪 TEST MODE - Would reply to {tweet_id} with: {message}")
+            return {"id": "test_" + str(tweet_id)}
+        
         # Create a tweet in reply to the specified tweet ID
         response = api.create_tweet(
             text=message,
@@ -376,7 +412,7 @@ def reply_to_tweet(tweet_id, message):
         logger.info(f"✅ Replied to tweet {tweet_id}: {message}")
         
         # Track this tweet for rate limiting
-        track_sent_tweet(tweet_id)
+        track_reply(tweet_id)
         
         return response
     except tweepy.TweepyException as e:
@@ -386,15 +422,16 @@ def reply_to_tweet(tweet_id, message):
 
 # Calculate optimal polling intervals based on user count and rate limits
 def get_polling_interval():
-    """Dynamic polling interval calculation to spread out 50 polls per day optimally"""
-    # Calculate base interval in seconds (24 hours / max polls)
-    base_interval = 24 * 60 * 60 / MAX_POLLS_PER_DAY
+    """Calculate interval between checks with jitter"""
+    # Base interval is 24 hours / number of checks
+    base_interval = 24 * 60 * 60 / MAX_POLLS_PER_DAY  # seconds
     
-    # Add some randomness to avoid predictable patterns (±15%)
-    jitter = random.uniform(0.85, 1.15)
+    # Add random jitter (±15%)
+    jitter_factor = random.uniform(0.85, 1.15)
+    interval = base_interval * jitter_factor
     
     # Return interval in seconds
-    return base_interval * jitter
+    return interval
 
 async def check_feed(user):
     """Check a user's feed for new tweets"""
@@ -431,10 +468,21 @@ async def check_feed(user):
                     # Mark as seen
                     mark_tweet_as_seen(user, tweet["id"])
                     
-                    # Generate a reply
-                    tweet_text = tweet["title"] + " " + tweet["content"]
-                    logger.info(f"🤖 Generating reply to: {tweet_text[:100]}...")
-                    reply = generate_reply(tweet_text, user)
+                    # Determine tweet type and content
+                    title = tweet["title"].strip()
+                    description = tweet["content"]
+
+                    # First check title
+                    if title:
+                        tweet_type = "text"
+                        prompt_context = f"The original tweet from {user} says:\n\n\"{title}\""
+                    # If no title, check description for media
+                    else:
+                        tweet_type = "picture"
+                        prompt_context = f"{user} posted a picture"
+                    
+                    logger.info(f"🤖 Generating reply to {tweet_type} tweet...")
+                    reply = generate_reply(prompt_context, user)
                     
                     if reply:
                         logger.info(f"✍️ Generated reply: {reply}")
@@ -443,9 +491,9 @@ async def check_feed(user):
                         if response:
                             # Mark as replied
                             mark_tweet_as_seen(user, tweet["id"], replied=True)
-                            logger.info(f"✅ Successfully replied to tweet {tweet['id']}")
+                            logger.info(f"✅ Successfully replied to {tweet_type} tweet {tweet['id']}")
                     else:
-                        logger.error(f"❌ Failed to generate reply for tweet from {user}")
+                        logger.error(f"❌ Failed to generate reply for {tweet_type} tweet from {user}")
                 else:
                     logger.debug(f"Tweet {tweet['id']} from {user} already seen")
             
@@ -462,42 +510,46 @@ async def check_feed(user):
         logger.exception("Detailed error:")
 
 async def poll_all_users():
-    """Simple round-robin polling of users with staggered intervals and jitter"""
+    """Main polling loop that runs 16 times per day, checking 2 random users each time"""
     logger.info("🤖 Starting Twitter reply bot...")
-    logger.info(f"📡 Monitoring feeds for users: {', '.join(USERS)}")
-    logger.info(f"📊 Rate limits: {MAX_POLLS_PER_DAY} polls/day, {MAX_REPLIES_PER_MONTH} replies/month")
-    logger.info("⏰ Polling schedule (with ±30 second jitter):")
-    for i, user in enumerate(USERS):
-        logger.info(f"   {user}: Every {len(USERS) * 5 + 20} minutes, offset ~{i * 5} minutes")
-    
-    def get_jittered_interval(base_minutes):
-        """Add ±30 seconds of random jitter to a base interval"""
-        base_seconds = base_minutes * 60
-        jitter = random.uniform(-30, 30)  # ±30 seconds
-        return base_seconds + jitter
+    logger.info(f"📡 Monitoring pool of users: {', '.join(USERS)}")
+    logger.info(f"📊 Schedule: {MAX_POLLS_PER_DAY} checks per day, {USERS_PER_CHECK} users per check")
+    logger.info(f"⏰ Base interval between checks: {BASE_INTERVAL/60:.1f} minutes (±15% jitter)")
     
     while True:
-        for i, user in enumerate(USERS):
-            try:
-                # Skip if we've hit the poll rate limit
-                if not can_poll_feed():
-                    logger.warning("⛔ Poll rate limit reached for today - pausing until reset")
-                    break
-                
+        try:
+            # Skip if we've hit the daily check limit
+            if not can_poll_feed():
+                logger.warning("⛔ Daily check limit reached - waiting until next reset")
+                await asyncio.sleep(get_polling_interval())
+                continue
+            
+            # Randomly select users to check
+            users_to_check = random.sample(USERS, USERS_PER_CHECK)
+            logger.info(f"🎲 Selected users for this check: {', '.join(users_to_check)}")
+            
+            # Check each selected user
+            for user in users_to_check:
                 await check_feed(user)
                 
-                if i < len(USERS) - 1:  # If not the last user
-                    wait_time = get_jittered_interval(5)  # ~5 minutes ±30s
-                    logger.info(f"⏱️ Waiting {wait_time:.1f} seconds before checking next user...")
-                    await asyncio.sleep(wait_time)
-                
-            except Exception as e:
-                logger.error(f"❌ Error polling user {user}: {e}")
-        
-        # After checking all users, wait ~20 minutes with jitter
-        wait_time = get_jittered_interval(20)  # ~20 minutes ±30s
-        logger.info(f"⏱️ Completed polling cycle. Waiting {wait_time:.1f} seconds before starting next cycle...")
-        await asyncio.sleep(wait_time)
+                # Small delay between users to avoid rate limits
+                if user != users_to_check[-1]:  # Don't wait after last user
+                    await asyncio.sleep(random.uniform(20, 50))
+            
+            # Calculate wait time until next check (base interval ±15%)
+            wait_time = max(
+                MIN_INTERVAL,  # Minimum 5 minutes
+                random.uniform(BASE_INTERVAL * 0.85, BASE_INTERVAL * 1.15)
+            )
+            
+            logger.info(f"⏱️ Completed check cycle. Next check in {wait_time/60:.1f} minutes")
+            await asyncio.sleep(wait_time)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in polling loop: {e}")
+            logger.exception("Detailed error:")
+            # Wait a bit before retrying on error
+            await asyncio.sleep(MIN_INTERVAL)
 
 # Entry point
 if __name__ == "__main__":
