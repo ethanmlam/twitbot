@@ -380,7 +380,7 @@ Reply:"""
                     "content": [
                         {
                             "type": "text",
-                            "text": prompt
+                            "text": "@grok " + prompt
                         }
                     ]
                 }
@@ -536,7 +536,7 @@ async def poll_all_users():
                 
                 # Small delay between users to avoid rate limits
                 if user != users_to_check[-1]:  # Don't wait after last user
-                    await asyncio.sleep(random.uniform(20, 50))
+                    await asyncio.sleep(random.uniform(200, 1000))
             
             # Calculate wait time until next check (base interval ±15%)
             wait_time = max(
