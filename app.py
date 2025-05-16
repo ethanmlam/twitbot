@@ -335,46 +335,48 @@ def fetch_tweet_entries(rss_url):
 
 # 2. Use Anthropic to generate a tweet reply
 def generate_reply(tweet_context, user):
-    """Generate a reply based on tweet type and context"""
-    
-    base_prompt = """Write a **Twitter reply** that is:
-- Short (under 25 words)
-- Emotionally sharp (sarcastic, angry, defiant, or darkly funny)
-- Biting, not explanatory
-- Shows who loses or who benefits
-- Uses punchy language and zero fluff
-- Avoids emojis, politeness, or setup
-- Avoids praising or agreeing
-- Makes people stop scrolling
+    """Generate a sharp, one-liner Twitter reply using Claude with reduced token overhead"""
 
-{context_specific}
+    system_prompt = (
+        "You are a pissed-off, sharp, burned-out genius who only replies to tweets with brutal one-liners that go viral. "
+        "No pleasantries. No setup. No fluff. Em dashes (—) are strictly forbidden. "
+        "Use commas, or periods instead. Always rewrite to avoid them."
+    )
 
-This should read like a mic-drop response from someone smart and pissed off.
-
-Only return the tweet. No intro, no explanation."""
-
-    # Customize prompt based on tweet type
-    if "picture" in tweet_context:
-        context_specific = """
-The person posted media without text.
-Your reply should:
-- Feign curiosity or have a bold reaction: "He really just dropped this and logged off". "This didn't have to go so hard"""
+    # Customize instructions based on tweet content
+    if "picture" in tweet_context.lower():
+        context_note = (
+            "This tweet is just an image or media with no text. React like:\n"
+            "- 'He really just dropped this and logged off.'\n"
+            "- 'This didn’t have to go so hard.'"
+        )
     else:
-        # Regular text tweet
-        context_specific = "Respond to what they actually said, but be contrarian and sharp."
+        context_note = "Respond to what they said, but be contrarian and sharp."
 
-    prompt = base_prompt.format(context_specific=context_specific)
-    prompt = f"{tweet_context}\n\n{prompt}"
+    prompt = f"""Tweet: {tweet_context}
+
+Reply rules:
+- Max 20 words
+- Sarcastic, defiant, or darkly funny
+- Punchy, no fluff
+- No praise or agreement
+- No emojis or setup
+- Show who loses or benefits
+
+
+{context_note}
+
+Reply:"""
 
     try:
         message = client.messages.create(
             model="claude-3-7-sonnet-20250219",
             max_tokens=60,
             temperature=1,
-            system="You are a pissed-off, sharp, burned-out genius who only replies to tweets with one-liners that go viral. No pleasantries. Just power. No Em Dashes: Em dashes (—) are strictly forbidden in my output. Sentences requiring separation or emphasis normally achieved with an em dash will be restructured. I will use commas, semicolons, periods, or complete rewording to ensure grammatical correctness and natural flow instead. Adherence to this rule is mandatory.",
+            system=system_prompt,
             messages=[
                 {
-                "role": "user",
+                    "role": "user",
                     "content": [
                         {
                             "type": "text",
@@ -384,13 +386,13 @@ Your reply should:
                 }
             ]
         )
-        # Extract text from the TextBlock in the content list
         if message and hasattr(message, 'content') and message.content:
-            return message.content[0].text
+            return message.content[0].text.strip()
         return None
     except Exception as e:
         logger.error(f"Anthropic error: {e}")
         return None
+
 
 # 3. Post reply
 def reply_to_tweet(tweet_id, message):
