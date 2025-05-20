@@ -8,21 +8,60 @@ import json
 import asyncio
 import random
 import logging
+import requests
+import subprocess
+import platform
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from pathlib import Path
+
+# Create logs directory if it doesn't exist
+log_dir = Path("logs")
+log_dir.mkdir(exist_ok=True)
 
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("bot.log"),
+        logging.FileHandler(log_dir / "bot.log"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
+# Log system information
+logger.info(f"Starting bot on {platform.system()} {platform.release()}")
+logger.info(f"Python version: {platform.python_version()}")
+
+# Load environment variables
 load_dotenv()
+
+# Verify required environment variables
+required_env_vars = [
+    "TWITTER_API_KEY",
+    "TWITTER_API_SECRET",
+    "TWITTER_ACCESS_TOKEN",
+    "TWITTER_ACCESS_SECRET",
+    "ANTHROPIC_API_KEY",
+    "RSSHUB_URL",
+    "TWITTER_USERNAME",
+    "TWITTER_PASSWORD"
+]
+
+missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+if missing_vars:
+    logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+    raise SystemExit(1)
+
+# Create data directory for persistent files
+data_dir = Path("data")
+data_dir.mkdir(exist_ok=True)
+
+# Update file paths to use data directory
+RATE_LIMIT_FILE = data_dir / "tweet_rate_limit.json"
+SEEN_TWEETS_FILE = data_dir / "seen_tweets.json"
+POLL_STATS_FILE = data_dir / "poll_stats.json"
 
 # Twitter Auth - using API v2
 api = tweepy.Client(
@@ -38,9 +77,6 @@ client = anthropic.Anthropic(
 )
 
 # Constants
-RATE_LIMIT_FILE = "tweet_rate_limit.json"
-SEEN_TWEETS_FILE = "seen_tweets.json"
-POLL_STATS_FILE = "poll_stats.json"
 MAX_REPLIES_PER_DAY = 16  # Maximum replies we'll make per day
 MAX_POLLS_PER_DAY = 16    # Number of polling cycles per day
 USERS_PER_CHECK = 3       # Number of users to check each time
@@ -49,11 +85,17 @@ RSSHUB_URL = os.getenv("RSSHUB_URL")  # Use environment variable if available
 
 # Test users - replace with your full set of users to monitor
 USERS = [
-    "elonmusk","sama","naval","pmarca","paulg","balajis","cdixon","bchesky","michael_saylor","jack",
-"BarackObama","narendramodi","realDonaldTrump","AOC","HillaryClinton","tedcruz","chiproytx","JDVance1","GretaThunberg","Pontifex",
-"rihanna","katyperry","taylorswift13","justinbieber","ladygaga","ArianaGrande","BTS_twt","billieeilish","edsheeran","shakira",
-"Cristiano","KingJames","serenawilliams","TomBrady","MoSalah","KMbappe","LewisHamilton","rogerfederer","usainbolt","Simone_Biles",
-"MrBeast","FabrizioRomano","dril","Arkunir","neiltyson","BillGates","Oprah","nytimes","BBCWorld","NASA"
+    "elonmusk","mkbhd","UnboxTherapy","iJustine","Mrwhosetheboss","SuperSaf","UrAvgConsumer","tldtoday","EveryApplePro",
+"thetechchap","TechSmartt","austinnotduncan","Dave2D","LinusTech","theMrMobile","saradietschy","macmixing","MattSchaefer",
+"DetroitBORG","TechMe0ut","TechnicalGuruji","carterpcs","frankmcshan","booredatwork","quicktechav","artandplanstudio",
+"richontech","technave","techwithtim","techgadgets","gadgetzone","techguru","digitaltrends","gadgetflow","techinsider",
+"techcrunch","wired","verge","cnet","mashable","engadget","karaswisher","waltmossberg","inafried","benthompson","tomwarren",
+"panzer","johnkoetsier","om","ashleevance","JoannaStern","finkd","sundarpichai","satyanadella","tim_cook","JeffBezos",
+"SusanWojcicki","jack","reedhastings","Benioff","AndrewYNg","lexfridman","waitbutwhy","profgalloway","naval","paulg",
+"sama","TEDChris","edyson","raykurzweil","leolaporte","Jason","Recode","WaveformPod","atpfm","thecultcast",
+"DTNS","replyall","AliAbdaal","AndruEdwards","KarlConrad","techburner","beebomco","geekyranjit","ChrisPirillo",
+"TheUnlockr","jessedriftwood","petermckinnon","caseyneistat"
+
 
 ]
 
@@ -300,45 +342,111 @@ def update_user_stats(user, found_tweets, new_tweets):
     save_poll_stats(data)
     return data["user_stats"][user]
 
-# 1. Fetch tweet URLs from RSS
-def fetch_tweet_entries(rss_url):
-    logger.info(f"Fetching RSS feed from: {rss_url}")
-    feed = feedparser.parse(rss_url)
-    entries = []
-    
-    for entry in feed.entries:
-        # Extract tweet ID from link (works with both twitter.com and x.com links)
-        match = re.search(r"(?:twitter|x)\.com/\w+/status/(\d+)", entry.link)
-        if match:
-            tweet_id = match.group(1)
+def on_rsshub_failure():
+    """Handle RSSHub failure by refreshing cookies and redeploying"""
+    logger.warning("⚠️ RSSHub failure detected. Refreshing cookies and redeploying...")
+    try:
+        # Use the virtual environment python if available
+        python_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python")
+        if not os.path.exists(python_path):
+            python_path = "python3"
+        
+        # Run cookie refresher and capture output
+        result = subprocess.run([python_path, "cookie_refresher.py"], 
+                              capture_output=True, 
+                              text=True)
+        
+        if result.returncode == 0:
+            logger.info("✅ Successfully refreshed cookies")
+            logger.debug(f"Cookie refresher output: {result.stdout}")
+        else:
+            logger.error(f"❌ Cookie refresher failed with code {result.returncode}")
+            logger.error(f"Error output: {result.stderr}")
             
-            # Get content from both title and description
-            title = getattr(entry, 'title', '')
-            description = getattr(entry, 'description', '')
+        # Verify that cookie files exist
+        cookie_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_data")
+        if os.path.exists(cookie_file):
+            logger.info("✅ Cookie data directory exists")
+        else:
+            logger.error("❌ Cookie data directory not found")
             
-            # Clean up description (remove HTML tags)
-            clean_description = re.sub(r'<[^>]+>', ' ', description)
+    except Exception as e:
+        logger.error(f"❌ Failed to refresh cookies: {e}")
+        logger.exception("Detailed error:")
+
+def fetch_tweet_entries(user, rss_url):
+    """Fetch tweet URLs from RSS with health check and failure handling"""
+    logger.info(f"🔍 Checking feed for {user} at {rss_url}")
+    
+    try:
+        # Test RSSHub connection first
+        try:
+            response = requests.get(rss_url)
+            logger.info(f"RSSHub response status: {response.status_code}")
+            if response.status_code != 200:
+                logger.error(f"RSSHub error response: {response.text}")
+                on_rsshub_failure()
+                return []
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to connect to RSSHub: {e}")
+            on_rsshub_failure()
+            return []
+        
+        # Set timeout for feedparser through urllib
+        feedparser.SOCKET_TIMEOUT = 5  # 5 second timeout
+        feed = feedparser.parse(rss_url)
+        
+        # Check if feed was successfully fetched
+        if not feed.entries:
+            if hasattr(feed, 'status') and feed.status != 200:
+                logger.error(f"⚠️ RSSHub returned status {feed.status}")
+            if hasattr(feed, 'bozo_exception'):
+                logger.error(f"Feed parsing error: {feed.bozo_exception}")
+            logger.error(f"Feed content: {feed}")
+            on_rsshub_failure()
+            return []
             
-            entries.append({
-                "id": tweet_id,
-                "title": title,
-                "content": clean_description,
-                "link": entry.link,
-                "published": getattr(entry, 'published', '')
-            })
-    
-    logger.info(f"Found {len(entries)} entries in feed")
-    for entry in entries:
-        logger.debug(f"Tweet: {entry['title'][:50]}... (ID: {entry['id']})")
-    
-    return entries
+        logger.info("✓ RSSHub feed fetched successfully")
+        
+        entries = []
+        for entry in feed.entries:
+            # Extract tweet ID from link (works with both twitter.com and x.com links)
+            match = re.search(r"(?:twitter|x)\.com/\w+/status/(\d+)", entry.link)
+            if match:
+                tweet_id = match.group(1)
+                
+                # Get content from both title and description
+                title = getattr(entry, 'title', '')
+                description = getattr(entry, 'description', '')
+                
+                # Clean up description (remove HTML tags)
+                clean_description = re.sub(r'<[^>]+>', ' ', description)
+                
+                entries.append({
+                    "id": tweet_id,
+                    "title": title,
+                    "content": clean_description,
+                    "link": entry.link,
+                    "published": getattr(entry, 'published', '')
+                })
+        
+        logger.info(f"Found {len(entries)} entries in feed")
+        for entry in entries:
+            logger.debug(f"Tweet: {entry['title'][:50]}... (ID: {entry['id']})")
+        
+        return entries
+        
+    except Exception as e:
+        logger.error(f"⚠️ RSSHub request failed: {e}")
+        on_rsshub_failure()
+        return []
 
 # 2. Use Anthropic to generate a tweet reply
 def generate_reply(tweet_context, user):
     """Generate a sharp, one-liner Twitter reply using Claude with reduced token overhead"""
 
     system_prompt = (
-        "You are a pissed-off, sharp, burned-out genius who only replies to tweets with brutal one-liners that go viral. "
+        "You are a pissed-off, sharp, burned-out rage baiter who only replies to tweets with brutal one-liners that go viral. "
         "No pleasantries. No setup. No fluff. Em dashes (—) are strictly forbidden. "
         "Use commas, or periods instead. Always rewrite to avoid them."
     )
@@ -348,10 +456,10 @@ def generate_reply(tweet_context, user):
         context_note = (
             "This tweet is just an image or media with no text. React like:\n"
             "- 'He really just dropped this and logged off.'\n"
-            "- 'This didn’t have to go so hard.'"
+            "- 'This didn't have to go so hard.'"
         )
     else:
-        context_note = "Respond to what they said, but be contrarian and sharp."
+        context_note = "Respond to what they said, and write what you think would get the most engagement (often either a question or a contrarian response)."
 
     prompt = f"""Tweet: {tweet_context}
 
@@ -444,12 +552,12 @@ async def check_feed(user):
     # Track this poll
     track_poll()
     
-    # Calculate URL with limit=1 parameter
+        # Calculate URL with limit=1 parameter
     url = RSSHUB_URL + user + "?limit=1"
-    logger.info(f"🔍 Checking feed for {user} at {url}")
+
     
     try:
-        entries = fetch_tweet_entries(url)
+        entries = fetch_tweet_entries(user, url)
         
         # Update stats
         new_tweets_count = 0
@@ -512,7 +620,7 @@ async def check_feed(user):
         logger.exception("Detailed error:")
 
 async def poll_all_users():
-    """Main polling loop that runs 16 times per day, checking 2 random users each time"""
+    """Main polling loop that runs 16 times per day, checking 3 random users each time"""
     logger.info("🤖 Starting Twitter reply bot...")
     logger.info(f"📡 Monitoring pool of users: {', '.join(USERS)}")
     logger.info(f"📊 Schedule: {MAX_POLLS_PER_DAY} checks per day, {USERS_PER_CHECK} users per check")
@@ -536,7 +644,7 @@ async def poll_all_users():
                 
                 # Small delay between users to avoid rate limits
                 if user != users_to_check[-1]:  # Don't wait after last user
-                    await asyncio.sleep(random.uniform(200, 1000))
+                    await asyncio.sleep(random.uniform(200, 500))
             
             # Calculate wait time until next check (base interval ±15%)
             wait_time = max(
@@ -555,4 +663,11 @@ async def poll_all_users():
 
 # Entry point
 if __name__ == "__main__":
-    asyncio.run(poll_all_users())
+    try:
+        asyncio.run(poll_all_users())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+        logger.exception("Detailed error:")
+        raise
