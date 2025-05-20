@@ -113,7 +113,7 @@ dist
 venv/
 __pycache__/
 *.pyc
-
+*$py.class
 
 # Docusaurus cache and generated files
 .docusaurus
@@ -142,3 +142,24 @@ __pycache__/
 
 # Python virtual environments
 claude-env/
+
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Browser data
+user_data/
+logs/
+data/
+
+# Credentials and secrets
+*.pem
+*.key
+*.crt
+*.cert
